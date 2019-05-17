@@ -195,18 +195,12 @@ CIDR block range for the subnet.
 EOF
 }
 
-#
-#
-# SSH
-# --------------------
-
-variable ssh_allowed_cidrs {
-  type    = "list"
-  default = ["0.0.0.0/0"]
+variable internal_lb_ip {
+  type    = "string"
+  default = "10.127.13.37"
 
   description = <<EOF
-List of CIDR blocks to allow access to SSH into nodes. To disable, set to the
-empty list [].
+RFC 1918 Address for internal load balancer
 EOF
 }
 
@@ -214,43 +208,40 @@ EOF
 #
 # TLS
 # --------------------
-
-variable tls_ca_subject {
-  description = "The `subject` block for the root CA certificate."
-  type        = "map"
-
-  default = {
-    common_name         = "Example Inc. Root"
-    organization        = "Example, Inc"
-    organizational_unit = "Department of Certificate Authority"
-    street_address      = ["123 Example Street"]
-    locality            = "The Intranet"
-    province            = "CA"
-    country             = "US"
-    postal_code         = "95559-1227"
-  }
+variable vault_tls_bucket {
+  type = "string"
+  default = ""
+  description = <<EOF
+GCS bucket where TLS certificates and encrypted keys are stored. Override this
+value if you already have certificates created and managed for Vault.
+EOF
 }
 
-variable tls_dns_names {
-  description = "List of DNS names added to the Vault server self-signed certificate"
-  type        = "list"
-  default     = ["vault.example.net"]
+variable vault_ca_cert_filename {
+  type = "string"
+  default = "ca.crt"
+  description = <<EOF
+GCS object path within the vault_tls_bucket. This is the root CA certificate.
+Default: ca.crt
+EOF
 }
 
-variable tls_ips {
-  description = "List of IP addresses added to the Vault server self-signed certificate"
-  type        = "list"
-  default     = ["127.0.0.1"]
+variable vault_tls_key_filename {
+  type = "string"
+  default = "vault.key.enc"
+  description = <<EOF
+Encrypted GCS object path within the vault_tls_bucket. This is the Vault TLS private key.
+Default: vault.key.enc
+EOF
 }
 
-variable tls_cn {
-  description = "The TLS Common Name for the TLS certificates"
-  default     = "vault.example.net"
-}
-
-variable tls_ou {
-  description = "The TLS Organizational Unit for the TLS certificate"
-  default     = "IT Security Operations"
+variable vault_tls_cert_filename {
+  type = "string"
+  default = "vault.crt"
+  description = <<EOF
+GCS object path within the vault_tls_bucket. This is the vault server certificate.
+Default: vault.crt
+EOF
 }
 
 #
@@ -258,18 +249,13 @@ variable tls_ou {
 # Vault
 # --------------------
 
-variable vault_allowed_cidrs {
+variable allowed_service_accounts {
   type    = "list"
-  default = ["0.0.0.0/0"]
+  default = []
 
   description = <<EOF
-List of CIDR blocks to allow access to the Vault nodes. Since the load balancer
-is a pass-through load balancer, this must also include all IPs from which you
-will access Vault. The default is unrestricted (any IP address can access
-Vault). It is recommended that you reduce this to a smaller list.
-
-To disable, set to the empty list []. Even if disabled, internal rules will
-still allow the health checker to probe the nodes for health.
+Service account emails that are allowed to communicate to Vault over HTTPS on
+port 8200. By default, only the bastion and Vault nodes themselves are permitted.
 EOF
 }
 
@@ -321,7 +307,7 @@ EOF
 
 variable vault_min_num_servers {
   type    = "string"
-  default = "1"
+  default = "2"
 
   description = <<EOF
 Minimum number of Vault server nodes in the autoscaling group. The group will
@@ -356,18 +342,6 @@ variable vault_port {
 Numeric port on which to run and expose Vault. This should be a high-numbered
 port, since Vault does not run as a root user and therefore cannot bind to
 privledged ports like 80 or 443. The default is 8200, the standard Vault port.
-EOF
-}
-
-variable vault_proxy_port {
-  type    = "string"
-  default = "58200"
-
-  description = <<EOF
-Port to expose Vault's health status endpoint on over HTTP on /. This is
-required for the health checks to verify Vault's status. Only the health status
-endpoint is exposed, and it is only accessible from Google's load balancer
-addresses.
 EOF
 }
 

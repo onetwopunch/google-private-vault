@@ -14,7 +14,7 @@ LOCAL_IP="$(curl -sf -H "Metadata-Flavor: Google" http://metadata/computeMetadat
 # Deps
 apt-get update -yqq
 apt-get upgrade -yqq
-apt-get install -yqq jq libcap2-bin logrotate netcat nginx unzip
+apt-get install -yqq jq libcap2-bin logrotate unzip
 
 # Install Stackdriver for logging and monitoring
 curl -sSfL https://dl.google.com/cloudagents/install-logging-agent.sh | bash
@@ -49,23 +49,24 @@ VAULT_ARGS=${vault_args}
 EOF
 chmod 0600 /etc/vault.d/vault.env
 
-# TLS key and certs
+# Download TLS files from GCS
 mkdir -p /etc/vault.d/tls
-for data in "${vault_ca_cert}" "${vault_tls_key}" "${vault_tls_cert}"; do
-  tls_data=$${data#*=}
-  tls_file=$${data%"=$${tls_data}"}
-  echo "$${tls_data}" | base64 --decode | gcloud kms decrypt \
-    --project="${kms_project}" \
-    --location="${kms_location}" \
-    --keyring="${kms_keyring}" \
-    --key="${kms_crypto_key}" \
-    --plaintext-file=/etc/vault.d/tls/$${tls_file} \
-    --ciphertext-file=-
-  chmod 0600 /etc/vault.d/tls/$${tls_file}
+for file in "${vault_ca_cert_filename}" "${vault_tls_key_filename}" "${vault_tls_cert_filename}"; do
+  gsutil cp gs://${vault_tls_bucket}/$file /etc/vault.d/tls/$file
 done
-chmod 700 /etc/vault.d/tls
 
-# Make sure Vault owns everything
+# Decrypt the Vault private key
+gcloud kms decrypt \
+  --project="${kms_project}" \
+  --location="${kms_location}" \
+  --keyring="${kms_keyring}" \
+  --key="${kms_crypto_key}" \
+  --plaintext-file=/etc/vault.d/tls/vault.key \
+  --ciphertext-file=/etc/vault.d/tls/${vault_tls_key_filename}
+
+# Tighten permissions and make sure Vault owns everything
+chmod 0600 /etc/vault.d/tls/*
+chmod 700 /etc/vault.d/tls
 chown -R vault:vault /etc/vault.d
 
 # Make audit files
@@ -151,18 +152,6 @@ export HISTIGNORE="&:vault*"
 EOF
 chmod 644 /etc/profile.d/vault.sh
 source /etc/profile.d/vault.sh
-
-# Add health-check proxy because target pools don't support HTTPS
-cat <<EOF > /etc/nginx/sites-available/default
-server {
-  listen ${vault_proxy_port};
-  location / {
-    proxy_pass $VAULT_ADDR/v1/sys/health?uninitcode=200;
-  }
-}
-EOF
-systemctl enable nginx
-systemctl restart nginx
 
 # Pull Vault data from syslog into a file for fluentd
 cat <<"EOF" > /etc/rsyslog.d/vault.conf

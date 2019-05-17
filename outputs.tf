@@ -14,58 +14,10 @@
 # limitations under the License.
 #
 
-output ca_cert_pem {
-  value     = "${tls_self_signed_cert.root.cert_pem}"
-  sensitive = true
+output bastion_ssh_command {
+  value     = "gcloud beta compute ssh ${google_compute_instance.bastion.name} --tunnel-through-iap"
 
   description = <<EOF
-CA certificate used to verify Vault TLS client connections.
-EOF
-}
-
-output ca_key_pem {
-  value     = "${tls_private_key.root.private_key_pem}"
-  sensitive = true
-
-  description = <<EOF
-Private key for the CA.
-EOF
-}
-
-output service_account_email {
-  value = "${google_service_account.vault-admin.email}"
-
-  description = <<EOF
-Email for the vault-admin service account.
-EOF
-}
-
-output vault_addr {
-  value = "https://${google_compute_address.vault.address}:${var.vault_port}"
-
-  description = <<EOF
-Full protocol, address, and port (FQDN) pointing to the Vault load balancer.
-This is a drop-in to VAULT_ADDR:
-
-    export VAULT_ADDR="$(terraform output vault_addr)"
-
-And then continue to use Vault commands as usual.
-EOF
-}
-
-output vault_lb_addr {
-  value = "${google_compute_address.vault.address}"
-
-  description = <<EOF
-Address of the load balancer without port or protocol information. You probably
-want to use `vault_addr`.
-EOF
-}
-
-output vault_lb_port {
-  value = "${var.vault_port}"
-
-  description = <<EOF
-Port where Vault is exposed on the load balancer.
+Command to run to allow access into the Vault Bastion for administration via IAP tunnel
 EOF
 }

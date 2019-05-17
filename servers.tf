@@ -26,12 +26,6 @@ resource "google_compute_instance_template" "vault" {
 
   machine_type = "${var.vault_machine_type}"
 
-  tags = [
-    "allow-ssh",
-    "allow-vault",
-    "${var.vault_instance_tags}",
-  ]
-
   labels = "${var.vault_instance_labels}"
 
   network_interface {
@@ -64,33 +58,42 @@ resource "google_compute_instance_template" "vault" {
   depends_on = ["google_project_service.service"]
 }
 
-# This legacy health check is required because the target pool requires an HTTP
-# health check.
-resource "google_compute_http_health_check" "vault" {
-  project = "${var.project_id}"
+resource "google_compute_instance" "bastion" {
+  project     = "${var.project_id}"
+  zone         = "${var.region}-a"
+  name        = "vault-bastion"
 
-  name         = "vault-health-legacy"
-  request_path = "/"
-  port         = "${var.vault_proxy_port}"
+  machine_type = "${var.vault_machine_type}"
+  network_interface {
+    subnetwork         = "${google_compute_subnetwork.vault-subnet.self_link}"
+    subnetwork_project = "${var.project_id}"
+  }
 
-  check_interval_sec  = 15
-  timeout_sec         = 5
-  healthy_threshold   = 2
-  unhealthy_threshold = 2
+  service_account {
+    email  = "${google_service_account.bastion.email}"
+    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
 
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-9"
+    }
+  }
+
+  scratch_disk {}
+  metadata_startup_script = "${data.template_file.bastion-startup-script.rendered}"
   depends_on = ["google_project_service.service"]
 }
 
-# Target pool for vault nodes
-resource "google_compute_target_pool" "vault" {
-  project = "${var.project_id}"
+resource "google_compute_health_check" "vault" {
+ name = "internal-service-health-check"
 
-  name   = "vault-tp"
-  region = "${var.region}"
+ timeout_sec        = 1
+ check_interval_sec = 1
 
-  health_checks = ["${google_compute_http_health_check.vault.name}"]
-
-  depends_on = ["google_project_service.service"]
+ tcp_health_check {
+   port = "${var.vault_port}"
+ }
 }
 
 # Forward external traffic to the target pool
@@ -99,13 +102,14 @@ resource "google_compute_forwarding_rule" "vault" {
 
   name                  = "vault"
   region                = "${var.region}"
-  ip_address            = "${google_compute_address.vault.address}"
   ip_protocol           = "TCP"
-  load_balancing_scheme = "EXTERNAL"
-  network_tier          = "PREMIUM"
+  load_balancing_scheme = "INTERNAL"
+  ip_address            = "${var.internal_lb_ip}"
+  network               = "${google_compute_network.vault-network.self_link}"
+  subnetwork            = "${google_compute_subnetwork.vault-subnet.self_link}"
 
-  target     = "${google_compute_target_pool.vault.self_link}"
-  port_range = "${var.vault_port}"
+  backend_service       = "${google_compute_region_backend_service.vault.self_link}"
+  ports                 = ["${var.vault_port}"]
 
   depends_on = ["google_project_service.service"]
 }
@@ -121,14 +125,21 @@ resource "google_compute_region_instance_group_manager" "vault" {
   instance_template  = "${google_compute_instance_template.vault.self_link}"
   wait_for_instances = false
 
-  target_pools = ["${google_compute_target_pool.vault.self_link}"]
-
   named_port {
     name = "vault-http"
     port = "${var.vault_port}"
   }
 
   depends_on = ["google_project_service.service"]
+}
+
+resource "google_compute_region_backend_service" "vault" {
+  name          = "vault-backend-service"
+  region        = "${var.region}"
+  health_checks = ["${google_compute_health_check.vault.self_link}"]
+  backend {
+    group = "${google_compute_region_instance_group_manager.vault.instance_group}"
+  }
 }
 
 # Autoscaling policies for vault

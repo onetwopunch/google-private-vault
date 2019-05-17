@@ -1,9 +1,18 @@
-# Vault on GCE Terraform Module
+# Vault on GCE behind IAP with Bastion Terraform Module
 
-Modular deployment of Vault on Google Compute Engine.
 
-This module is versioned and released on the Terraform module registry. Look for
-the tag that corresponds to your version for the correct documentation.
+## Differences from Upstream
+
+This was originally forked from [terraform-google-vault](https://github.com/terraform-google-modules/terraform-google-vault) and adds the following security controls/enhancements:
+
+* TLS private keys are not added in plain text to the terraform state file
+* Ability for orgs to manage their own TLS certificates via a bucket
+* Vault is not reachable by anything but the bastion host by default.
+* Vault is behind an internal load balancer, whose IP is in the SAN of the TLS certificate
+* Bastion host is private and only available via IAP tunnelling
+* Firewall rules use service accounts instead of network tags
+
+## Features
 
 - **Vault HA** - Vault is configured to run in high availability mode with
   Google Cloud Storage. Choose a `min_num_vault_servers` greater than 0 to
@@ -34,10 +43,6 @@ the tag that corresponds to your version for the correct documentation.
     The following values do not represent Vault's best practices and you may
     wish to change their defaults:
 
-    - Vault is publicly accessible from any IP through the load balancer. To
-      limit the list of source IPs that can communicate with Vault nodes, set
-      `vault_allowed_cidrs` to a list of CIDR blocks.
-
     - Auditing is not enabled by default, because an initial bootstrap requires
       you to initialize the Vault. Everything is pre-configured for when you're
       ready to enable audit logging, but it cannot be enabled before Vault is
@@ -61,7 +66,7 @@ the tag that corresponds to your version for the correct documentation.
 
     ```hcl
     module "vault" {
-      source         = "terraform-google-modules/vault/google"
+      source         = "github.com/onetwopunch/gcp-vault-bastion-iap"
       project_id     = "${var.project_id}"
       region         = "${var.region}"
       kms_keyring    = "${var.kms_keyring}"
@@ -69,27 +74,16 @@ the tag that corresponds to your version for the correct documentation.
     }
     ```
 
-    Make sure you are using version pinning to avoid unexpected changes when the
-    module is updated.
-
 1. Execute Terraform:
 
     ```
     $ terraform apply
     ```
 
-1. Configure your local Vault binary to communicate with the Vault server:
+1. Wait for the bastion and vault servers to come online
 
     ```
-    $ export VAULT_ADDR="$(terraform output vault_addr)"
-    $ export VAULT_CACERT="$(pwd)/ca.crt"
-    ```
-
-1. Wait for Vault to start. Here's a script or you can wait ~2 minutes.
-
-    ```
-    (while [[ $count -lt 60 && "$(vault status 2>&1)" =~ "connection refused" ]]; do ((count=count+1)) ; echo "$(date) $count: Waiting for Vault to start..." ; sleep 2; done && [[ $count -lt 60 ]])
-    [[ $? -ne 0 ]] && echo "ERROR: Error waiting for Vault to start" && exit 1
+    $ gcloud beta compute ssh vault-bastion --tunnel-through-iap
     ```
 
 1. Initialize the Vault cluster, generating the initial root token and unseal
@@ -126,16 +120,46 @@ keys:
 
 ## Inputs
 
-See the [inputs on the Terraform module registry][registry-inputs]. Be sure to
-choose the version that corresponds to the version of the module you are using
-locally.
-
+| Name | Description | Type | Default | Required |
+|------|-------------|:----:|:-----:|:-----:|
+| `allowed_service_accounts` | Service account emails that are allowed to communicate to Vault over HTTPS on port 8200. By default, only the bastion and Vault nodes themselves are permitted. | list | `<list>` | no |
+| `internal_lb_ip` | RFC 1918 Address for internal load balancer | string | `"10.127.13.37"` | no |
+| `kms_crypto_key` | The name of the Cloud KMS Key used for encrypting initial TLS certificates and for configuring Vault auto-unseal. | string | `"vault-init"` | no |
+| `kms_keyring` | Name of the Cloud KMS KeyRing for asset encryption. | string | n/a | yes |
+| `kms_protection_level` | The protection level to use for the KMS crypto key. | string | `"software"` | no |
+| `network_subnet_cidr_range` | CIDR block range for the subnet. | string | `"10.127.0.0/20"` | no |
+| `project_id` | ID of the project in which to create resources and add IAM bindings. | string | n/a | yes |
+| `project_services` | List of services to enable on the project where Vault will run. These services are required in order for this Vault setup to function.<br><br>To disable, set to the empty list []. You may want to disable this if the services have already been enabled and the current user does not have permission to enable new services. | list | `<list>` | no |
+| `region` | Region in which to create resources. | string | `"us-east4"` | no |
+| `service_account_name` | Name of the Vault service account. | string | `"vault-admin"` | no |
+| `service_account_project_additional_iam_roles` | List of custom IAM roles to add to the project. | list | `<list>` | no |
+| `service_account_project_iam_roles` | List of IAM roles for the Vault admin service account to function. If you need to add additional roles, update `service_account_project_additional_iam_roles` instead. | list | `<list>` | no |
+| `service_account_storage_bucket_iam_roles` | List of IAM roles for the Vault admin service account to have on the storage bucket. | list | `<list>` | no |
+| `storage_bucket_force_destroy` | Set to true to force deletion of backend bucket on `terraform destroy`. | string | `"false"` | no |
+| `storage_bucket_location` | Location for the multi-regional Google Cloud Storage bucket in which Vault data will be stored. Valid values include:<br><br>  - asia   - eu   - us | string | `"us"` | no |
+| `storage_bucket_name` | Name of the Google Cloud Storage bucket for the Vault backend storage. This must be globally unique across of of GCP. If left as the empty string, this will default to: "<project-id>-vault-data". | string | `""` | no |
+| `vault_args` | Additional command line arguments passed to Vault server/ | string | `""` | no |
+| `vault_ca_cert_filename` | GCS object path within the vault_tls_bucket. This is the root CA certificate. Default: ca.crt | string | `"ca.crt"` | no |
+| `vault_instance_labels` | Labels to apply to the Vault instances. | map | `<map>` | no |
+| `vault_instance_metadata` | Additional metadata to add to the Vault instances. | map | `<map>` | no |
+| `vault_instance_tags` | Additional tags to apply to the instances. Note "allow-ssh" and "allow-vault" will be present on all instances. | list | `<list>` | no |
+| `vault_log_level` | Log level to run Vault in. See the Vault documentation for valid values. | string | `"warn"` | no |
+| `vault_machine_type` | Machine type to use for Vault instances. | string | `"n1-standard-1"` | no |
+| `vault_max_num_servers` | Maximum number of Vault server nodes to run at one time. The group will not autoscale beyond this number. | string | `"7"` | no |
+| `vault_min_num_servers` | Minimum number of Vault server nodes in the autoscaling group. The group will not have less than this number of nodes. | string | `"2"` | no |
+| `vault_port` | Numeric port on which to run and expose Vault. This should be a high-numbered port, since Vault does not run as a root user and therefore cannot bind to privledged ports like 80 or 443. The default is 8200, the standard Vault port. | string | `"8200"` | no |
+| `vault_tls_bucket` | GCS bucket where TLS certificates and encrypted keys are stored. Override this value if you already have certificates created and managed for Vault. | string | `""` | no |
+| `vault_tls_cert_filename` | GCS object path within the vault_tls_bucket. This is the vault server certificate. Default: vault.crt | string | `"vault.crt"` | no |
+| `vault_tls_disable_client_certs` | Use and expect client certificates. You may want to disable this if users will not be authenticating to Vault with client certificates. | string | `"false"` | no |
+| `vault_tls_key_filename` | Encrypted GCS object path within the vault_tls_bucket. This is the Vault TLS private key. Default: vault.key.enc | string | `"vault.key.enc"` | no |
+| `vault_ui_enabled` | Controls whether the Vault UI is enabled and accessible. | string | `"true"` | no |
+| `vault_version` | Version of vault to install. This version must be 1.0+ and must be published on the HashiCorp releases service. | string | `"1.0.3"` | no |
 
 ## Outputs
 
-See the [outputs on the Terraform module registry][registry-outputs]. Be sure to
-choose the version that corresponds to the version of the module you are using
-locally.
+| Name | Description |
+|------|-------------|
+| bastion_ssh_command | Command to run to allow access into the Vault Bastion for administration via IAP tunnel |
 
 
 ## Resources
@@ -182,14 +206,6 @@ Instance" tagged as "vaultproject.io/server".
 The Vault audit logs, once enabled, will appear in Stackdriver under "GCE VM
 Instance" tagged as "vaultproject.io/audit".
 
-
-## Local security
-
-- **Encrypted TLS data is stored locally.** This Terraform module generates
-  self-signed TLS certificates. The certificates are encrypted with Google Cloud
-  KMS and the encrypted text is cached locally on disk in the `kms/` folder.
-  Even though the data is encrypted, you should secure this folder (it is
-  automatically ignored from source control).
 
 
 ## FAQ

@@ -17,6 +17,7 @@
 locals {
   # Allow the user to specify a custom bucket name, default to project-id prefix
   storage_bucket_name = "${var.storage_bucket_name != "" ? var.storage_bucket_name : "${var.project_id}-vault-data"}"
+  vault_tls_bucket = "${var.vault_tls_bucket != "" ? var.vault_tls_bucket : local.storage_bucket_name}"
 }
 
 # Configure the Google provider, locking to the 2.0 series.
@@ -47,6 +48,25 @@ resource "google_storage_bucket" "vault" {
   location      = "${upper(var.storage_bucket_location)}"
   storage_class = "MULTI_REGIONAL"
   force_destroy = "${var.storage_bucket_force_destroy}"
+
+  depends_on = ["google_project_service.service"]
+}
+
+# Create the vault-admin service account.
+resource "google_service_account" "bastion" {
+  account_id   = "vault-bastion"
+  display_name = "Vault Bastion"
+
+  depends_on = ["google_project_service.service"]
+}
+
+# Give ability of Bastion to pull CA.crt. Note this will also give
+# the bastion the ability to see the vault.key.enc, but it will not
+# have the ability to decrypt, so it shouldn't matter.
+resource "google_project_iam_member" "bastion-iam" {
+  project = "${var.project_id}"
+  role    = "roles/storage.objectViewer"
+  member  = "serviceAccount:${google_service_account.bastion.email}"
 
   depends_on = ["google_project_service.service"]
 }
@@ -122,7 +142,7 @@ resource "google_kms_crypto_key" "vault-init" {
 # Compile the startup script. This script installs and configures Vault and all
 # dependencies.
 data "template_file" "vault-startup-script" {
-  template = "${file("${path.module}/scripts/startup.sh.tpl")}"
+  template = "${file("${path.module}/scripts/vault-startup.sh.tpl")}"
 
   vars {
     config                = "${data.template_file.vault-config.rendered}"
@@ -130,12 +150,12 @@ data "template_file" "vault-startup-script" {
 
     vault_args       = "${var.vault_args}"
     vault_port       = "${var.vault_port}"
-    vault_proxy_port = "${var.vault_proxy_port}"
     vault_version    = "${var.vault_version}"
 
-    vault_ca_cert  = "ca.crt=${data.external.vault-ca-cert-encrypted.result["ciphertext"]}"
-    vault_tls_key  = "vault.key=${data.external.vault-tls-key-encrypted.result["ciphertext"]}"
-    vault_tls_cert = "vault.crt=${data.external.vault-tls-cert-encrypted.result["ciphertext"]}"
+    vault_tls_bucket = "${local.vault_tls_bucket}"
+    vault_ca_cert_filename  = "${var.vault_ca_cert_filename}"
+    vault_tls_key_filename  = "${var.vault_tls_key_filename}"
+    vault_tls_cert_filename = "${var.vault_tls_cert_filename}"
 
     kms_project    = "${var.project_id}"
     kms_location   = "${google_kms_key_ring.vault.location}"
@@ -154,12 +174,23 @@ data "template_file" "vault-config" {
     kms_keyring    = "${google_kms_key_ring.vault.name}"
     kms_crypto_key = "${google_kms_crypto_key.vault-init.name}"
 
-    lb_ip          = "${google_compute_address.vault.address}"
+    lb_ip          = "${var.internal_lb_ip}"
     storage_bucket = "${google_storage_bucket.vault.name}"
 
     vault_log_level                = "${var.vault_log_level}"
     vault_port                     = "${var.vault_port}"
     vault_tls_disable_client_certs = "${var.vault_tls_disable_client_certs}"
     vault_ui_enabled               = "${var.vault_ui_enabled}"
+  }
+}
+
+data "template_file" "bastion-startup-script" {
+  template = "${file("${path.module}/scripts/bastion-startup.sh.tpl")}"
+
+  vars {
+    vault_version    = "${var.vault_version}"
+    lb_ip            = "${var.internal_lb_ip}"
+    vault_tls_bucket = "${local.vault_tls_bucket}"
+    vault_ca_cert_filename = "${var.vault_ca_cert_filename}"
   }
 }

@@ -83,15 +83,6 @@ resource "google_compute_subnetwork" "vault-subnet" {
   depends_on = ["google_project_service.service"]
 }
 
-resource "google_compute_address" "vault" {
-  project = "${var.project_id}"
-
-  name   = "vault-lb"
-  region = "${var.region}"
-
-  depends_on = ["google_project_service.service"]
-}
-
 # Data source for list of google IPs
 data "google_compute_lb_ip_ranges" "ranges" {
   # hashicorp/terraform#20484 prevents us from depending on the service
@@ -107,7 +98,7 @@ resource "google_compute_firewall" "allow-lb-healthcheck" {
 
   allow {
     protocol = "tcp"
-    ports    = ["${var.vault_proxy_port}"]
+    ports    = ["${var.vault_port}"]
   }
 
   source_ranges = [
@@ -115,27 +106,7 @@ resource "google_compute_firewall" "allow-lb-healthcheck" {
     "${data.google_compute_lb_ip_ranges.ranges.http_ssl_tcp_internal}",
   ]
 
-  target_tags = ["allow-vault"]
-
-  depends_on = ["google_project_service.service"]
-}
-
-# Allow any user-defined CIDRs to talk to the Vault instances.
-resource "google_compute_firewall" "allow-external" {
-  project = "${var.project_id}"
-  name    = "vault-allow-external"
-  network = "${google_compute_network.vault-network.self_link}"
-
-  allow {
-    protocol = "tcp"
-    ports    = ["${var.vault_port}"]
-  }
-
-  source_ranges = [
-    "${var.vault_allowed_cidrs}",
-  ]
-
-  target_tags = ["allow-vault"]
+  target_service_accounts = ["${google_service_account.vault-admin.email}"]
 
   depends_on = ["google_project_service.service"]
 }
@@ -151,8 +122,12 @@ resource "google_compute_firewall" "allow-internal" {
     ports    = ["${var.vault_port}-${var.vault_port + 1}"]
   }
 
-  source_ranges = ["${google_compute_subnetwork.vault-subnet.ip_cidr_range}"]
-
+  source_service_accounts = [
+    "${google_service_account.bastion.email}",
+    "${google_service_account.vault-admin.email}",
+    "${var.allowed_service_accounts}",
+  ]
+  target_service_accounts = ["${google_service_account.vault-admin.email}"]
   depends_on = ["google_project_service.service"]
 }
 
@@ -167,8 +142,9 @@ resource "google_compute_firewall" "allow-ssh" {
     ports    = ["22"]
   }
 
-  source_ranges = ["${var.ssh_allowed_cidrs}"]
-  target_tags   = ["allow-ssh"]
+  # Allow SSH only from IAP
+  source_ranges = ["35.235.240.0/20"]
+  target_service_accounts = ["${google_service_account.bastion.email}"]
 
   depends_on = ["google_project_service.service"]
 }
