@@ -66,7 +66,7 @@ This was originally forked from [terraform-google-vault](https://github.com/terr
 
     ```hcl
     module "vault" {
-      source         = "github.com/onetwopunch/gcp-vault-bastion-iap"
+      source         = "github.com/onetwopunch/google-private-vault"
       project_id     = "${var.project_id}"
       region         = "${var.region}"
       kms_keyring    = "${var.kms_keyring}"
