@@ -18,21 +18,40 @@
 # This file contains the steps to create and sign TLS self-signed certs for
 # Vault.
 #
+locals {
+  ips = [
+    "${var.tls_ips}",
+    "${var.internal_lb_ip}",
+  ]
+}
 
-# Generate a self-sign TLS certificate that will act as the root CA.
 resource "null_resource" "vault-tls" {
   provisioner "local-exec" {
     command = "${path.module}/scripts/create-tls-certs.sh"
     environment = {
-      SHOULD_RUN           = "${google_storage_bucket.vault.name == local.vault_tls_bucket ? "1" : "0"}"
+      # Set to 0 for testing certificate creation locally without uploading
       ENCRYPT_AND_UPLOAD   = "1"
       PROJECT              = "${var.project_id}"
-      BUCKET               = "${google_storage_bucket.vault.name}"
-      LB_IP                = "${var.internal_lb_ip}"
+      CN                   = "${var.tls_cn}"
+      OU                   = "${var.tls_ou}"
+      ORG                  = "${lookup(var.tls_ca_subject, "organization")}"
+      COUNTRY              = "${lookup(var.tls_ca_subject, "country")}"
+      STATE                = "${lookup(var.tls_ca_subject, "province")}"
+      LOCALITY             = "${lookup(var.tls_ca_subject, "locality")}"
+      BUCKET               = "${local.vault_tls_bucket}"
+      DOMAINS              = "${join(",", var.tls_dns_names)}"
+      IPS                  = "${join(",", local.ips)}"
       KMS_KEYRING          = "${google_kms_key_ring.vault.name}"
       KMS_LOCATION         = "${google_kms_key_ring.vault.location}"
       KMS_KEY              = "${google_kms_crypto_key.vault-init.name}"
     }
   }
   depends_on = ["google_storage_bucket.vault"]
+}
+
+resource "null_resource" "pull-ca-cert" {
+  provisioner "local-exec" {
+    command = "gsutil cp gs://${local.vault_tls_bucket}/${var.vault_ca_cert_filename} ca.crt"
+  }
+  depends_on = ["null_resource.vault-tls"]
 }

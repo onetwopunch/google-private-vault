@@ -2,3 +2,4 @@
 terraform.tfstate*
 terraform.tfvars*
 ca.crt
+test-tls.sh

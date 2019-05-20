@@ -212,8 +212,12 @@ variable vault_tls_bucket {
   type = "string"
   default = ""
   description = <<EOF
-GCS bucket where TLS certificates and encrypted keys are stored. Override this
-value if you already have certificates created and managed for Vault.
+Use this bucket to store your own TLS files, if you do not want this to generate them.
+By default this module expects the following files at the root of the bucket, but these
+can be overriden:
+- `ca.crt`: Root CA public certificate
+- `vault.crt`: Vault server public certificate, signed by the ca.crt
+- `vault.key.enc` Vault server certificate private key, encrypted with the kms key provided.
 EOF
 }
 
@@ -243,6 +247,45 @@ GCS object path within the vault_tls_bucket. This is the vault server certificat
 Default: vault.crt
 EOF
 }
+
+variable tls_ca_subject {
+  description = "The `subject` block for the root CA certificate."
+  type        = "map"
+
+  default = {
+    common_name         = "Example Inc. Root"
+    organization        = "Example, Inc"
+    organizational_unit = "Department of Certificate Authority"
+    street_address      = ["123 Example Street"]
+    locality            = "The Intranet"
+    province            = "CA"
+    country             = "US"
+    postal_code         = "95559-1227"
+  }
+}
+
+variable tls_dns_names {
+  description = "List of DNS names added to the Vault server self-signed certificate"
+  type        = "list"
+  default     = ["vault.example.net"]
+}
+
+variable tls_ips {
+  description = "List of IP addresses added to the Vault server self-signed certificate"
+  type        = "list"
+  default     = ["127.0.0.1"]
+}
+
+variable tls_cn {
+  description = "The TLS Common Name for the TLS certificates"
+  default     = "vault.example.net"
+}
+
+variable tls_ou {
+  description = "The TLS Organizational Unit for the TLS certificate"
+  default     = "IT Security Operations"
+}
+
 
 #
 #

@@ -18,32 +18,83 @@ set -o pipefail
 # KMS_KEYRING: Google KMS keyring name
 # KMS_LOCATION: Google KMS key location
 # KMS_KEY: Google KMS key
-# SHOULD_RUN: 1 or 0. Only run if user hasn't specified a bucket to not overwrite their values.
+# COUNTRY: 2 letter country code
+# STATE: 2 letter state code
+# LOCALITY: City name
+# CN: Server cert CN
+# OU: Organizational Unit
+# ORG: Organization
+# IPS: Comma-separated list of alternate IPs
+# DOMAINS: Comma-separated list of alternate domains
 # ENCRYPT_AND_UPLOAD: 1 or 0. If unset this will not encrypt or upload, leaving the files behind for analysis or manual upload.
 
-if [ $SHOULD_RUN -ne 1 ]; then
-  echo "Not executing TLS cert creation since user has input a bucket override"
-  exit 0
+# Make sure that we don't ever overwrite keys or certs
+if [ $ENCRYPT_AND_UPLOAD -eq 1 ]; then
+  for file in root.key.enc vault.key.enc ca.crt vault.crt; do
+    if gsutil -q stat gs://$BUCKET/$file; then
+      echo "Refusing to overwrite existing certificate or key files"
+      exit 1
+    fi
+  done
 fi
 
+# Create temporary working directory and enter it
 TMPDIR=/tmp/vault-tls-$RANDOM
 mkdir $TMPDIR && pushd $TMPDIR
+
+# Construct SAN Entry in config
+cat << EOF > openssl.cnf
+[req]
+distinguished_name = dn
+req_extensions = extensions
+prompt = no
+
+[dn]
+C = $COUNTRY
+ST = $STATE
+L = $LOCALITY
+O  = $ORG
+OU = $OU
+CN = $CN
+
+[extensions]
+subjectAltName=@san
+basicConstraints=critical,CA:TRUE
+extendedKeyUsage=serverAuth
+
+[san]
+EOF
+
+count=1
+echo $DOMAINS | sed -n 1'p' | tr ',' '\n' | while read dns; do
+  echo "DNS.$count = $dns" >> openssl.cnf
+  let count=count+1
+done
+
+count=1
+echo $IPS | sed -n 1'p' | tr ',' '\n' | while read ip; do
+  echo "IP.$count = $ip" >> openssl.cnf
+  let count=count+1
+done
 
 # Create and self-sign root CA
 openssl genrsa -out root.key 4096
 
 # NOTE: In production, it is recommended to add a password to this certificate
-# but when automating with Terraform, there is no user inut allowed.
-openssl req -x509 -new -nodes -key root.key -days 1024 -out ca.crt -sha256 -subj "/C=US/ST=CA/O=$PROJECT/CN=vault.root"
+openssl req -x509 -new -nodes \
+  -key root.key \
+  -days 1024 \
+  -out ca.crt \
+  -sha256 \
+  -config openssl.cnf \
+  -extensions extensions
 
 # Create a CSR for the Vault server cert with extension for LB IP address
 openssl genrsa -out vault.key 4096
 openssl req -new -sha256 \
-    -key vault.key \
-    -subj "/C=US/ST=CA/O=$PROJECT/CN=$LB_IP" \
-    -reqexts SAN \
-    -config <(cat /etc/ssl/openssl.cnf <(printf "\n[SAN]\nsubjectAltName=IP:$LB_IP")) \
-    -out vault.csr
+  -key vault.key \
+  -config openssl.cnf \
+  -out vault.csr
 
 # Create the server cert with the CSR
 openssl x509 -sha256 -req \
@@ -52,8 +103,8 @@ openssl x509 -sha256 -req \
   -CAkey root.key \
   -CAcreateserial \
   -days 365 \
-  -extensions SAN \
-  -extfile <(cat /etc/ssl/openssl.cnf <(printf "\n[SAN]\nsubjectAltName=IP:$LB_IP")) \
+  -extensions extensions \
+  -extfile <(cat openssl.cnf | sed 's/CA:TRUE/CA:FALSE/') \
   -out vault.crt
 
 # Use this flag for debug purposes to test out, and upload certs manually
